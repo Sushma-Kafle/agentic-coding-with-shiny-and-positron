@@ -1,0 +1,120 @@
+---
+title: "Untitled"
+format: html
+---
+
+```{r echo= FALSE, message = FALSE, warning=FALSE}
+library(shiny)
+library(fpp3)
+library(stringr)
+library(gt)
+```
+
+## 1. Data Import / Preparation
+```{r}
+aus_wine_raw <- readr::read_csv("AustralianWines.csv", na = "*") #column Rose contains some "*"" so converting that to na
+names(aus_wine_raw) <- c("Month", "Fortified", "Red", "Rose",
+                        "Sparkling", "Sweet_white", "Dry_white") #renaming columns so that the space in filed_name will be removed.
+                                                        
+aus_wine <- aus_wine_raw |>
+  fill(Rose, .direction = "down") |> #any na will be replace by value just above the na
+  mutate(
+    Month = mdy(str_replace(Month, "-", "-01-")), # converting date
+    Month = yearmonth(Month) ) |>
+  pivot_longer(cols = -Month,names_to = "Varietal",values_to = "Sales") |>as_tsibble(index = Month, key = Varietal)
+
+```
+
+## 2. Split into Training + Validation
+```{r}
+var_choice <- "Fortified"
+
+wine_var <- aus_wine |>
+  filter(Varietal == var_choice)
+
+## Training cutoff date
+train_cutoff <- yearmonth("1993 Dec")
+
+training <- wine_var |>
+  filter(Month <= train_cutoff)   # up to cutoff
+
+validation <- wine_var |>
+   filter(Month > train_cutoff)
+
+```
+
+
+## 3. Model (per varietal) -Fit models (TSLM, ETS, ARIMA) on training
+```{r}
+models <- training |>
+  model(
+    TSLM  = TSLM(Sales ~ trend() + season()),
+    ETS   = ETS(Sales),
+    ARIMA = ARIMA(Sales))
+models
+models |> t()        # see model forms (ETS(M,A,M), ARIMA orders, etc.)
+```
+
+
+## 4 a. Forecast - Forecast over validation window (for scoring)
+```{r}
+fc_val <- models |>
+  forecast(new_data = validation)
+```
+
+## 4 b. Forecast h steps ahead (e.g., 12 months into the future)
+```{r}
+h <- 12  # forecast horizon in months
+fc_future <- models |>
+  forecast(h = h)
+```
+
+
+## Step 5 – Evaluate (accuracy on train & validation)
+
+```{r}
+## accuracy on training data
+train_acc <- accuracy(models)
+
+## accuracy on validation data
+val_acc <- accuracy(fc_val, validation)
+
+## combine & keep main metrics
+acc_all <- bind_rows(
+  train_acc |> mutate(Window = "Training"),
+  val_acc   |> mutate(Window = "Validation")
+) |>
+  select(Window, .model, RMSE, MAE, MAPE)
+
+acc_all |>
+  arrange(Window, RMSE) |>
+  gt() |>
+  tab_header(title = paste("Accuracy for", var_choice, "wine"))
+
+```
+
+
+
+## Step 6 – Visualize forecasts- Plot future forecasts + full history
+```{r}
+autoplot(fc_future, wine_var) +
+  labs(
+    title = paste("Forecasts for", var_choice, "wine sales"),
+    x = "Month",
+    y = "Sales (thousands of liters)"
+  ) +
+  guides(colour = guide_legend(title = "Model"))
+
+```
+
+## 6b. Plot validation-period forecasts (how models did in 1994)
+```{r}
+autoplot(fc_val, wine_var) +
+  labs(
+    title = paste("Validation forecasts for", var_choice, "wine (1994)"),
+    x = "Month",
+    y = "Sales (thousands of liters)"
+  ) +
+  guides(colour = guide_legend(title = "Model"))
+
+```
